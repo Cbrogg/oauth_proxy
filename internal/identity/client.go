@@ -27,12 +27,20 @@ type Userinfo struct {
 	Email string `json:"email"`
 }
 
+// sweepEvery bounds how often the background goroutine reclaims expired cache
+// entries. It is intentionally independent of the configured TTL so the sweeper
+// never starves under a long TTL or thrashes under a short one.
+const sweepEvery = time.Minute
+
 type Client struct {
 	cfg    *config.Config
 	pocket *pocketid.Client
 
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
+
+	stopCh chan struct{}
+	doneCh chan struct{}
 }
 
 type cacheEntry struct {
@@ -41,10 +49,55 @@ type cacheEntry struct {
 }
 
 func NewClient(cfg *config.Config, pocket *pocketid.Client) *Client {
-	return &Client{
+	c := &Client{
 		cfg:    cfg,
 		pocket: pocket,
 		cache:  make(map[string]cacheEntry),
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+	}
+	go c.sweepLoop()
+	return c
+}
+
+// Close stops the background sweeper and waits for it to exit. It is safe to
+// call from multiple goroutines; repeated calls are no-ops.
+func (c *Client) Close() {
+	c.mu.Lock()
+	select {
+	case <-c.stopCh:
+		c.mu.Unlock()
+		<-c.doneCh
+		return
+	default:
+		close(c.stopCh)
+	}
+	c.mu.Unlock()
+	<-c.doneCh
+}
+
+func (c *Client) sweepLoop() {
+	defer close(c.doneCh)
+	ticker := time.NewTicker(sweepEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			c.sweepExpired()
+		}
+	}
+}
+
+func (c *Client) sweepExpired() {
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.cache {
+		if now.After(entry.expiresAt) {
+			delete(c.cache, key)
+		}
 	}
 }
 

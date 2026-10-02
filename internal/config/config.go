@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -25,9 +26,30 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen    string `yaml:"listen"`
-	PublicURL string `yaml:"public_url"`
-	LogLevel  string `yaml:"log_level"`
+	Listen    string     `yaml:"listen"`
+	PublicURL string     `yaml:"public_url"`
+	LogLevel  string     `yaml:"log_level"`
+	CORS      CORSConfig `yaml:"cors"`
+}
+
+type CORSConfig struct {
+	// AllowedOrigins lists origins permitted by the browser. An empty list
+	// allows any origin (each response reflects the request Origin). Entries
+	// are compared exactly; no wildcards are supported.
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	// AllowedMethods sets the methods exposed to browsers (preflight +
+	// Access-Control-Allow-Methods). Defaults to GET, POST, DELETE, OPTIONS.
+	AllowedMethods []string `yaml:"allowed_methods"`
+	// AllowedHeaders sets the headers browsers may send. Defaults to
+	// Authorization and Content-Type. Requests may always use methods/headers
+	// permitted here.
+	AllowedHeaders []string `yaml:"allowed_headers"`
+	// AllowCredentials toggles Access-Control-Allow-Credentials. When true
+	// the configured origins must be explicit (reflecting "*" is not allowed
+	// together with credentials), so an empty AllowedOrigins forces the
+	// actual request origin to be echoed.
+	AllowCredentials bool          `yaml:"allow_credentials"`
+	MaxAge           time.Duration `yaml:"max_age"`
 }
 
 type LiteLLMConfig struct {
@@ -122,6 +144,7 @@ func (c *Config) validate() error {
 	if c.Server.LogLevel == "" {
 		c.Server.LogLevel = "info"
 	}
+	c.applyCORSDefaults()
 
 	if c.LiteLLM.BaseURL == "" {
 		return fmt.Errorf("litellm.base_url is required")
@@ -247,4 +270,60 @@ func (c *Config) AcceptedClientIDSet() map[string]struct{} {
 		set[id] = struct{}{}
 	}
 	return set
+}
+
+var (
+	defaultCORSMethods = []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions}
+	defaultCORSHeaders = []string{"Authorization", "Content-Type"}
+)
+
+func (c *Config) applyCORSDefaults() {
+	if len(c.Server.CORS.AllowedMethods) == 0 {
+		c.Server.CORS.AllowedMethods = append([]string(nil), defaultCORSMethods...)
+	}
+	if len(c.Server.CORS.AllowedHeaders) == 0 {
+		c.Server.CORS.AllowedHeaders = append([]string(nil), defaultCORSHeaders...)
+	}
+}
+
+// OriginAllowed returns the Access-Control-Allow-Origin value for a request
+// Origin. With an empty configured list every origin is allowed and the
+// request's own Origin is reflected. Otherwise only an exact configured match
+// is returned. The empty string means the origin is not allowed.
+func (c *Config) OriginAllowed(origin string) string {
+	if origin == "" {
+		return ""
+	}
+	allowed := c.Server.CORS.AllowedOrigins
+	if len(allowed) == 0 {
+		return origin
+	}
+	for _, o := range allowed {
+		if o == origin {
+			return origin
+		}
+	}
+	return ""
+}
+
+// AllowedOriginsActive reports whether an explicit origin allow-list is
+// configured (as opposed to the reflect-all default).
+func (c *Config) AllowedOriginsActive() bool {
+	return len(c.Server.CORS.AllowedOrigins) > 0
+}
+
+func (c *Config) AllowedMethodsHeader() string {
+	return strings.Join(c.Server.CORS.AllowedMethods, ", ")
+}
+
+func (c *Config) AllowedHeadersHeader() string {
+	return strings.Join(c.Server.CORS.AllowedHeaders, ", ")
+}
+
+func (c *Config) CorsMaxAgeSeconds() int64 {
+	ma := c.Server.CORS.MaxAge
+	if ma <= 0 {
+		return 0
+	}
+	return int64(ma / time.Second)
 }

@@ -35,6 +35,8 @@ func New(cfg *config.Config, pocket *pocketid.Client, identityClient *identity.C
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	r.Use(chimw.Recoverer)
+	r.Use(middleware.CORS(cfg))
 	r.Use(middleware.AccessLog(log))
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {

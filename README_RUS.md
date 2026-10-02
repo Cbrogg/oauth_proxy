@@ -188,6 +188,12 @@ server:
   listen: ":8080"
   public_url: "https://YOUR-PUBLIC-FACADE-DOMAIN"   # обязателен
   log_level: "info"
+  cors:
+    allowed_origins: ["https://app.example.com"]    # пусто = любой Origin
+    allowed_methods: ["GET", "POST", "DELETE", "OPTIONS"]
+    allowed_headers: ["Authorization", "Content-Type"]
+    allow_credentials: false
+    max_age: "1h"
 
 litellm:
   base_url: "https://YOUR-LITELLM-DOMAIN"
@@ -242,6 +248,15 @@ users:
 - Ключ карты — email (метка) пользователя.
 - `sub` — идентификатор пользователя в Pocket ID, по нему идёт lookup.
 - `toolsets.<name>.headers` — заголовки, которые подставляются в исходящий запрос к LiteLLM (обычно персональный `x-litellm-api-key`).
+
+### CORS
+
+Браузерные MCP-клиенты (ChatGPT Apps, веб-UI) требуют CORS. Фасад обрабатывает и preflight (`OPTIONS`, отвечает `204`), и обычные запросы, добавляя `Vary: Origin`, чтобы прокси кэшировали ответы с учётом origin.
+
+- `server.cors.allowed_origins` — точные разрешённые Origin. **Пустой список разрешает любой Origin** (ответ отражает запрошенный `Origin`). Без wildcard-синтаксиса.
+- `server.cors.allowed_methods` / `allowed_headers` — что браузерам разрешено использовать/слать (дефолты соответствуют маршрутам фасада и `Authorization`/`Content-Type`).
+- `server.cors.allow_credentials` — отправляет `Access-Control-Allow-Credentials`. Держите `false`, если фасад не за общим доменом с cookie; включает авторизацию неявно и отключает форму `*`.
+- `server.cors.max_age` — на сколько браузер может кэшировать preflight (например `1h`).
 
 ## URL-маршруты
 

@@ -235,14 +235,20 @@ func (c *Client) Validate(tokenString string, requireType string, issuer string,
 		}
 		kid, _ := t.Header["kid"].(string)
 		if kid != "" {
-			if key, ok := keys[kid]; ok {
+			key, ok := keys[kid]
+			if !ok {
+				return nil, fmt.Errorf("no jwks key for kid %q", kid)
+			}
+			return key, nil
+		}
+		// No kid: only acceptable while there is a single key, otherwise key
+		// selection is ambiguous and must not be guessed.
+		if len(keys) == 1 {
+			for _, key := range keys {
 				return key, nil
 			}
 		}
-		for _, key := range keys {
-			return key, nil
-		}
-		return nil, errors.New("no jwks key")
+		return nil, errors.New("no kid in token with multiple jwks keys")
 	}, jwt.WithLeeway(clockSkew))
 
 	if err != nil {

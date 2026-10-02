@@ -188,6 +188,12 @@ server:
   listen: ":8080"
   public_url: "https://YOUR-PUBLIC-FACADE-DOMAIN"   # required
   log_level: "info"
+  cors:
+    allowed_origins: ["https://app.example.com"]    # empty = allow any origin
+    allowed_methods: ["GET", "POST", "DELETE", "OPTIONS"]
+    allowed_headers: ["Authorization", "Content-Type"]
+    allow_credentials: false
+    max_age: "1h"
 
 litellm:
   base_url: "https://YOUR-LITELLM-DOMAIN"
@@ -242,6 +248,15 @@ users:
 - The map key is the user's email (label).
 - `sub` — the user identifier in Pocket ID; the lookup is done by it.
 - `toolsets.<name>.headers` — the headers injected into the outgoing request to LiteLLM (usually a per-user `x-litellm-api-key`).
+
+### CORS
+
+Browser-facing MCP clients (ChatGPT Apps, web UIs) need CORS. The facade handles both the preflight (`OPTIONS`, replies `204`) and actual requests, and adds `Vary: Origin` so intermediaries cache per origin.
+
+- `server.cors.allowed_origins` — exact origins permitted. An **empty list allows any origin** (each response reflects the request `Origin`). No wildcard syntax.
+- `server.cors.allowed_methods` / `allowed_headers` — what browsers may use/send (defaults reflect the facade's routes and `Authorization`/`Content-Type`).
+- `server.cors.allow_credentials` — sends `Access-Control-Allow-Credentials`. Keep `false` unless the facade is behind a shared domain with cookies; it implicitly disables the `*` allow-all form.
+- `server.cors.max_age` — how long a browser may cache a preflight (e.g. `1h`).
 
 ## URL routes
 

@@ -88,6 +88,57 @@ func TestRejectIDTokenType(t *testing.T) {
 	}
 }
 
+func TestUnknownKidRejected(t *testing.T) {
+	priv, kid := testRSAKey(t)
+	client := testClient(t, map[string]*rsa.PublicKey{kid: &priv.PublicKey})
+
+	now := time.Now()
+	claims := AccessTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "https://id.example.com",
+			Subject:   "00000000-0000-4000-8000-000000000000",
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+		Type: "oauth-access-token",
+	}
+	// Sign with a key the client does not know under a made-up kid.
+	token := signToken(t, priv, "someone-else-kid", claims)
+
+	_, err := client.Validate(token, "oauth-access-token", "https://id.example.com", time.Minute)
+	if err == nil {
+		t.Fatal("expected rejection for unknown kid")
+	}
+}
+
+func TestMissingKidWithMultipleKeysRejected(t *testing.T) {
+	privA, kidA := testRSAKey(t)
+	privB, kidB := testRSAKey(t)
+	client := testClient(t, map[string]*rsa.PublicKey{
+		kidA: &privA.PublicKey,
+		kidB: &privB.PublicKey,
+	})
+
+	claims := AccessTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "https://id.example.com",
+			Subject:   "00000000-0000-4000-8000-000000000000",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+		Type: "oauth-access-token",
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	s, err := token.SignedString(privA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Validate(s, "oauth-access-token", "https://id.example.com", time.Minute)
+	if err == nil {
+		t.Fatal("expected rejection for missing kid with multiple keys")
+	}
+}
+
 func TestInvalidSignature(t *testing.T) {
 	otherPriv, kid := testRSAKey(t)
 	client := testClient(t, map[string]*rsa.PublicKey{kid: &otherPriv.PublicKey})

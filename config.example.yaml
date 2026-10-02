@@ -2,6 +2,15 @@ server:
   listen: ":8080"
   public_url: "https://YOUR-PUBLIC-FACADE-DOMAIN"
   log_level: "info"
+  cors:
+    # Разрешённые браузерные Origin для CORS. Пустой список = разрешить любой
+    # Origin (эхо текущего Origin). Точное совпадение, без wildcard.
+    allowed_origins:
+      - "https://app.example.com"
+    allowed_methods: ["GET", "POST", "DELETE", "OPTIONS"]
+    allowed_headers: ["Authorization", "Content-Type"]
+    allow_credentials: false
+    max_age: "1h"
 
 litellm:
   base_url: "https://YOUR-LITELLM-DOMAIN"

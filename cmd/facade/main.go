@@ -65,4 +65,5 @@ func main() {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Error("shutdown error", "error", err)
 	}
+	identityClient.Close()
 }
