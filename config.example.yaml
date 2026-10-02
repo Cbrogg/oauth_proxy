@@ -1,0 +1,45 @@
+server:
+  listen: ":8080"
+  public_url: "https://YOUR-PUBLIC-FACADE-DOMAIN"
+  log_level: "info"
+
+litellm:
+  base_url: "https://YOUR-LITELLM-DOMAIN"
+  timeout: "60s"
+  shared_key_allowed: false   # true только для dev-прототипа
+
+pocket_id:
+  issuer: "https://YOUR-POCKET-ID-ISSUER"
+  discovery_url: "https://YOUR-POCKET-ID-ISSUER/.well-known/openid-configuration"
+  discovery_cache_ttl: "5m"
+  jwks_uri: "https://YOUR-POCKET-ID-ISSUER/.well-known/jwks.json"
+  jwks_cache_ttl: "1h"
+  userinfo_endpoint: "https://YOUR-POCKET-ID-ISSUER/api/oidc/userinfo"
+  userinfo_cache_ttl: "5m"
+  token_validation:
+    accepted_client_ids:
+      - "${CHATGPT_POCKET_ID_CLIENT_ID}"
+    require_token_type: "oauth-access-token"
+    clock_skew: "1m"
+
+identity:
+  match_by: "sub"
+
+# Ключ — email (метка). Lookup по полю sub (= Pocket ID User ID).
+# sub берётся из env POCKET_ID_USER_SUB: найдите пользователя в Pocket ID и
+# вставьте его User ID в .env. Если оставить плейсхолдер/заглушку —
+# фасад вернёт этому user 403, запрос до LiteLLM не дойдёт.
+toolsets:
+  memos: {}
+  n8n: {}
+
+users:
+  user@example.com:
+    sub: "${POCKET_ID_USER_SUB}"
+    toolsets:
+      memos:
+        headers:
+          x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_MEMOS}"
+      n8n:
+        headers:
+          x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_N8N}"

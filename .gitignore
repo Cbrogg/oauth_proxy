@@ -1,0 +1,7 @@
+config.yaml
+.env
+deploy/acme.json
+.vscode
+.idea
+.kilo
+тз.md

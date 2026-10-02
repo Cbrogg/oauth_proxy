@@ -1,0 +1,4 @@
+general_settings:
+  master_key: "${LITELLM_MASTER_KEY}"
+
+model_list: []

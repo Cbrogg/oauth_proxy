@@ -1,0 +1,120 @@
+name: oauth-proxy
+
+services:
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL}
+      DOMAIN_FACADE: ${DOMAIN_FACADE}
+      DOMAIN_POCKETID: ${DOMAIN_POCKETID}
+      DOMAIN_LITELLM: ${DOMAIN_LITELLM}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./deploy/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./deploy/acme.json:/acme.json
+
+  facade:
+    image: ghcr.io/cbrogg/oauth_proxy:latest
+    restart: unless-stopped
+    depends_on:
+      traefik:
+        condition: service_started
+      pocketid:
+        condition: service_started
+      litellm:
+        condition: service_healthy
+    environment:
+      DOMAIN_FACADE: ${DOMAIN_FACADE}
+      DOMAIN_POCKETID: ${DOMAIN_POCKETID}
+      CHATGPT_POCKET_ID_CLIENT_ID: ${CHATGPT_POCKET_ID_CLIENT_ID}
+      POCKET_ID_USER_SUB: ${POCKET_ID_USER_SUB}
+      LITELLM_KEY_USER1_MEMOS: ${LITELLM_KEY_USER1_MEMOS}
+      LITELLM_KEY_USER1_N8N: ${LITELLM_KEY_USER1_N8N}
+    volumes:
+      - ./deploy/facade-config.yaml:/config/config.yaml:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.facade.rule=Host(`${DOMAIN_FACADE}`)"
+      - "traefik.http.routers.facade.entrypoints=websecure"
+      - "traefik.http.routers.facade.tls=true"
+      - "traefik.http.routers.facade.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.facade.service=facade"
+      - "traefik.http.services.facade.loadbalancer.server.port=8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  pocketid:
+    image: ghcr.io/stonith404/pocket-id:latest
+    restart: unless-stopped
+    environment:
+      PUBLIC_APP_URL: https://${DOMAIN_POCKETID}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - pocketid_data:/app/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pocketid.rule=Host(`${DOMAIN_POCKETID}`)"
+      - "traefik.http.routers.pocketid.entrypoints=websecure"
+      - "traefik.http.routers.pocketid.tls=true"
+      - "traefik.http.routers.pocketid.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.pocketid.service=pocketid"
+      - "traefik.http.services.pocketid.loadbalancer.server.port=8080"
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:main-latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      LITELLM_HOST: 0.0.0.0
+      LITELLM_CONFIG_FILE_PATH: /app/config.yaml
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - ./deploy/litellm-config.yaml:/app/config.yaml:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.litellm.rule=Host(`${DOMAIN_LITELLM}`)"
+      - "traefik.http.routers.litellm.entrypoints=websecure"
+      - "traefik.http.routers.litellm.tls=true"
+      - "traefik.http.routers.litellm.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.litellm.service=litellm"
+      - "traefik.http.services.litellm.loadbalancer.server.port=4000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:
+  pocketid_data:

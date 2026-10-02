@@ -1,0 +1,41 @@
+server:
+  listen: ":8080"
+  public_url: "https://${DOMAIN_FACADE}"
+  log_level: "info"
+
+litellm:
+  base_url: "http://litellm:4000"
+  timeout: "60s"
+  shared_key_allowed: false
+
+pocket_id:
+  issuer: "https://${DOMAIN_POCKETID}"
+  discovery_url: "https://${DOMAIN_POCKETID}/.well-known/openid-configuration"
+  discovery_cache_ttl: "5m"
+  jwks_uri: "https://${DOMAIN_POCKETID}/.well-known/jwks.json"
+  jwks_cache_ttl: "1h"
+  userinfo_endpoint: "https://${DOMAIN_POCKETID}/api/oidc/userinfo"
+  userinfo_cache_ttl: "5m"
+  token_validation:
+    accepted_client_ids:
+      - "${CHATGPT_POCKET_ID_CLIENT_ID}"
+    require_token_type: "oauth-access-token"
+    clock_skew: "1m"
+
+identity:
+  match_by: "sub"
+
+toolsets:
+  memos: {}
+  n8n: {}
+
+users:
+  user@example.com:
+    sub: "${POCKET_ID_USER_SUB}"
+    toolsets:
+      memos:
+        headers:
+          x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_MEMOS}"
+      n8n:
+        headers:
+          x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_N8N}"

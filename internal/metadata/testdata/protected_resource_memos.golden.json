@@ -1,0 +1,14 @@
+{
+  "resource": "https://YOUR-PUBLIC-FACADE-DOMAIN/toolset/memos/mcp",
+  "authorization_servers": [
+    "https://YOUR-POCKET-ID-ISSUER"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ],
+  "scopes_supported": [
+    "openid",
+    "profile",
+    "email"
+  ]
+}
