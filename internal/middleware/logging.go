@@ -1,7 +1,11 @@
 package middleware
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -64,6 +68,51 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	w.bytes += n
 	return n, err
 }
+
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return h.Hijack()
+}
+
+func (w *statusWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		w.bytes += int(n)
+		return n, err
+	}
+	n, err := io.Copy(writeFunc(func(p []byte) (int, error) {
+		if w.status == 0 {
+			w.status = http.StatusOK
+		}
+		return w.ResponseWriter.Write(p)
+	}), r)
+	w.bytes += int(n)
+	return n, err
+}
+
+type writeFunc func(p []byte) (int, error)
+
+func (f writeFunc) Write(p []byte) (int, error) { return f(p) }
 
 func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
