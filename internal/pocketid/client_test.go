@@ -186,6 +186,68 @@ func TestExpiredTokenReturnsTrustedClaims(t *testing.T) {
 	}
 }
 
+// TestAccessTokenRFC9068Header reproduces real Pocket ID access tokens: the
+// `type` claim is absent from the payload and the RFC 9068 `at+jwt` marker
+// lives only in the JWT header. Such tokens must be accepted.
+func TestAccessTokenRFC9068Header(t *testing.T) {
+	priv, kid := testRSAKey(t)
+	client := testClient(t, map[string]*rsa.PublicKey{kid: &priv.PublicKey})
+
+	claims := AccessTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "https://id.example.com",
+			Subject:   "00000000-0000-4000-8000-000000000000",
+			Audience:  jwt.ClaimStrings{"596b7e00-80b8-4638-a845-b788086d630c"},
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = kid
+	token.Header["typ"] = "at+jwt"
+	s, err := token.SignedString(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := client.Validate(s, "oauth-access-token", "https://id.example.com", time.Minute)
+	if err != nil {
+		t.Fatalf("expected accept, got %v", err)
+	}
+	if got.Subject != claims.Subject {
+		t.Fatalf("sub: %s", got.Subject)
+	}
+}
+
+// An id token (RFC 9068 header typ "JWT", payload type "id-token") must still
+// be rejected even though a payload `type` is present.
+func TestRejectIDTokenTypeRFC9068Header(t *testing.T) {
+	priv, kid := testRSAKey(t)
+	client := testClient(t, map[string]*rsa.PublicKey{kid: &priv.PublicKey})
+
+	claims := AccessTokenClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "https://id.example.com",
+			Subject:   "00000000-0000-4000-8000-000000000000",
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+		Type: "id-token",
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = kid
+	token.Header["typ"] = "JWT"
+	s, err := token.SignedString(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Validate(s, "oauth-access-token", "https://id.example.com", time.Minute)
+	if err != ErrWrongType {
+		t.Fatalf("expected ErrWrongType, got %v", err)
+	}
+}
+
 func configStub() *config.PocketIDConfig {
 	return &config.PocketIDConfig{
 		Issuer:            "https://id.example.com",

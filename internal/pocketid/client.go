@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -277,11 +278,26 @@ func (c *Client) Validate(tokenString string, requireType string, issuer string,
 		return nil, ErrInvalidIssuer
 	}
 
-	if claims.Type != requireType {
+	if !isAccessToken(token, claims, requireType) {
 		return claims, ErrWrongType
 	}
 
 	return claims, nil
+}
+
+// isAccessToken reports whether the presented JWT is of the expected access
+// token type. Pocket ID does not put a `type` claim in the access token
+// payload; per RFC 9068 the access token carries `typ: at+jwt` in the header
+// instead (the id token uses `typ: JWT` plus a payload `type: id-token`).
+// We therefore accept either a payload `type` claim matching requireType, or
+// the standard `at+jwt` header for the "oauth-access-token" requirement.
+func isAccessToken(token *jwt.Token, claims *AccessTokenClaims, requireType string) bool {
+	if claims.Type != "" && claims.Type == requireType {
+		return true
+	}
+	headerType, _ := token.Header["typ"].(string)
+	return strings.EqualFold(strings.TrimSpace(headerType), "at+jwt") &&
+		strings.EqualFold(requireType, "oauth-access-token")
 }
 
 func (c *Client) FetchUserinfo(ctx context.Context, accessToken string) ([]byte, int, error) {
