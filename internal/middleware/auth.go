@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -31,7 +34,7 @@ func RequireBearer(cfg *config.Config, log *slog.Logger) func(http.Handler) http
 			if auth == "" || !strings.HasPrefix(auth, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == "" {
 				metrics.Global().AuthFailure("no_bearer")
 				logAuthDeny(log, r, http.StatusUnauthorized, "no_bearer")
-				write401(w, metadata.Challenge(cfg, toolset))
+				write401(w, r, metadata.Challenge(cfg, toolset))
 				return
 			}
 			token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
@@ -62,13 +65,13 @@ func JWTValidate(deps *Deps) func(http.Handler) http.Handler {
 					errors.Is(err, pocketid.ErrNotYetValid):
 					metrics.Global().AuthFailure("invalid_jwt")
 					logAuthDeny(deps.Log, r, http.StatusUnauthorized, "invalid_jwt", extra...)
-					write401(w, metadata.Challenge(deps.Config, toolset))
+					write401(w, r, metadata.Challenge(deps.Config, toolset))
 					return
 				case errors.Is(err, pocketid.ErrExpired), errors.Is(err, pocketid.ErrWrongType):
 					if claims != nil && deps.Config.IsWhitelisted(claims.Subject) {
 						metrics.Global().AuthFailure("invalid_jwt")
 						logAuthDeny(deps.Log, r, http.StatusUnauthorized, "invalid_jwt", extra...)
-						write401(w, metadata.Challenge(deps.Config, toolset))
+						write401(w, r, metadata.Challenge(deps.Config, toolset))
 						return
 					}
 					metrics.Global().AuthFailure("invalid_jwt")
@@ -78,7 +81,7 @@ func JWTValidate(deps *Deps) func(http.Handler) http.Handler {
 				default:
 					metrics.Global().AuthFailure("invalid_jwt")
 					logAuthDeny(deps.Log, r, http.StatusUnauthorized, "invalid_jwt", extra...)
-					write401(w, metadata.Challenge(deps.Config, toolset))
+					write401(w, r, metadata.Challenge(deps.Config, toolset))
 					return
 				}
 			}
@@ -135,14 +138,14 @@ func UserinfoResolve(deps *Deps) func(http.Handler) http.Handler {
 						"sub", claims.Subject,
 						"user", user.Email,
 					)
-					write401(w, metadata.Challenge(deps.Config, toolset))
+					write401(w, r, metadata.Challenge(deps.Config, toolset))
 				case errors.Is(err, identity.ErrSubMismatch):
 					metrics.Global().AuthFailure("userinfo_sub_mismatch")
 					logAuthDeny(deps.Log, r, http.StatusUnauthorized, "userinfo_sub_mismatch",
 						"sub", claims.Subject,
 						"user", user.Email,
 					)
-					write401(w, metadata.Challenge(deps.Config, toolset))
+					write401(w, r, metadata.Challenge(deps.Config, toolset))
 				case errors.Is(err, identity.ErrEmailMismatch):
 					metrics.Global().AuthFailure("email_mismatch")
 					logAuthDeny(deps.Log, r, http.StatusForbidden, "email_mismatch",
@@ -202,8 +205,14 @@ func UserWhitelist(deps *Deps, toolsetName string) func(http.Handler) http.Handl
 	}
 }
 
-func write401(w http.ResponseWriter, challenge string) {
+func write401(w http.ResponseWriter, r *http.Request, challenge string) {
 	w.Header().Set("WWW-Authenticate", challenge)
+	if body, ok := mcpAuthenticateBody(r); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write(body)
+		return
+	}
 	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 }
 
@@ -219,4 +228,56 @@ func Options204() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// mcpAuthenticateBody renders an MCP JSON-RPC error result that carries the
+// _meta["mcp/www_authenticate"] trigger ChatGPT uses to surface the OAuth
+// linking UI. It only applies to JSON-RPC tool requests; otherwise it reports
+// not-an-MCP-request so the caller keeps the plain HTTP 401 fallback.
+func mcpAuthenticateBody(r *http.Request) ([]byte, bool) {
+	if r.Method != http.MethodPost {
+		return nil, false
+	}
+	ct := r.Header.Get("Content-Type")
+	if !strings.Contains(ct, "json") {
+		return nil, false
+	}
+	if r.Body == nil {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		return nil, false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	var req struct {
+		ID any `json:"id"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, false
+	}
+	if req.ID == nil {
+		return nil, false
+	}
+
+	challenge := r.Header.Get("WWW-Authenticate")
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      req.ID,
+		"result": map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "Authentication required."},
+			},
+			"_meta": map[string]any{
+				"mcp/www_authenticate": []string{challenge},
+			},
+			"isError": true,
+		},
+	}
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }

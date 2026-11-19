@@ -2,16 +2,16 @@
 
 > [English version](README.md)
 
-Узкий **OAuth-фасад перед LiteLLM** для подключения ChatGPT Apps к MCP toolsets.
+Узкий **OAuth-фасад** перед **LiteLLM** (по умолчанию) и любым другим **Streamable HTTP MCP endpoint** для подключения ChatGPT Apps к MCP toolsets.
 
-ChatGPT требует OAuth **Resource Server** (metadata + Bearer-токен от Authorization Server). LiteLLM принимает Virtual Key в заголовке. Фасад закрывает этот разрыв:
+ChatGPT требует OAuth **Resource Server** (metadata + Bearer-токен от Authorization Server). Апстрим MCP-сервер (LiteLLM или любой другой endpoint) использует свою авторизацию — Virtual Key в заголовке для LiteLLM, либо API-ключ / токен вызывающего для обычного endpoint. Фасад закрывает этот разрыв:
 
 1. Отдаёт OAuth metadata (discovery, protected-resource) для ChatGPT.
 2. Валидирует JWT от Authorization Server и определяет пользователя через `userinfo`.
-3. Пропускает **только** whitelist-пользователей из конфига (`users`); остальным — `403`, запрос до LiteLLM не доходит.
-4. Подставляет **персональный** Virtual Key и проксирует на LiteLLM по тому же path, что пришёл на фасад (без rewrite).
+3. Пропускает **только** whitelist-пользователей из конфига (`users`); остальным — `403`, запрос до апстрима не доходит.
+4. Снимает токен вызывающего, подставляет **персональные** заголовки (Virtual Key для LiteLLM, или API-ключ для обычного endpoint) и проксирует на апстрим. При `forward_access_token` — передаёт проверенный токен как есть.
 
-Это **не** универсальный OAuth/MCP proxy: весь менеджмент MCP (серверы, tools, toolsets, ключи) выполняется в LiteLLM. Фасад **не** является Authorization Server, MCP-сервером, tool registry и не выпускает JWT.
+Это **не** универсальный OAuth/MCP proxy: фасад **не** является Authorization Server, MCP-сервером, tool registry и не выпускает JWT. Он валидирует OAuth (Pocket ID) и проксирует на Streamable HTTP MCP endpoint, на который указывает каждый toolset — по умолчанию LiteLLM, или любой другой сервер.
 
 ```
 ChatGPT
@@ -19,11 +19,12 @@ ChatGPT
   → login/token на домене Pocket ID
   → MCP запросы на фасад с access token от Pocket ID
        ↓ крипто-валидация JWT → aud (client_id) → lookup по sub
-       ↓ sub не в users → 403 (стоп, LiteLLM не трогаем)
-       ↓ есть → strip Authorization → inject x-litellm-api-key пользователя
-  → LiteLLM (тот же URL path, напр. /toolset/memos/mcp)
+       ↓ sub не в users → 403 (стоп, апстрим не трогаем)
+       ↓ есть → strip Authorization → inject заголовки пользователя
+       ↓ (или forward_access_token → пропускаем токен как есть)
+  → апстрим MCP endpoint (LiteLLM / или свой base_url, напр. /api/mcp)
        ↓
-  → Memos / Firefly / … (настраивается в LiteLLM UI, не в фасаде)
+  → Memos / N8N / Kryton / … (настраивается на этом MCP-сервере)
 ```
 
 ## Роли
@@ -31,8 +32,8 @@ ChatGPT
 | Роль | Кто | Зона ответственности |
 | --- | --- | --- |
 | OAuth AS | Pocket ID | authorize, token, userinfo, JWKS |
-| OAuth RS + proxy | **litellm-oauth-facade** | metadata, JWT, ACL, headers → LiteLLM |
-| MCP gateway | **LiteLLM** | toolsets, MCP servers, tools, virtual keys |
+| OAuth RS + proxy | **litellm-oauth-facade** | metadata, JWT, ACL, headers → апстрим |
+| MCP gateway | **LiteLLM** (по умолчанию) или любой Streamable HTTP MCP сервер | toolsets, MCP servers, tools, keys |
 | MCP client | ChatGPT | OAuth + Streamable HTTP |
 
 ## Топология деплоя
@@ -218,8 +219,16 @@ identity:
 
 # Ключ — email (метка). Lookup по полю sub (= Pocket ID user id).
 toolsets:
+  # LiteLLM toolset: апстрим = litellm.base_url, путь фасада сохраняется.
   memos: {}
   n8n: {}
+  # Обычный Streamable HTTP MCP endpoint (не LiteLLM). Путь фасада
+  # /toolset/kryton/mcp накладывается на https://kryton.example.com/api/mcp.
+  # forward_access_token: передать проверенный токен апстриму вместо заголовков.
+  kryton:
+    base_url: "https://kryton.example.com/api/mcp"
+    timeout: "60s"
+    forward_access_token: false
 
 users:
   user@example.com:
@@ -231,6 +240,9 @@ users:
       n8n:
         headers:
           x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_N8N}"
+      kryton:
+        headers:
+          x-api-key: "${KRYTON_API_KEY_USER1}"
 ```
 
 > В compose-деплое `litellm.base_url` — **внутренний** `http://litellm:4000`; `pocket_id.*` указывают на **публичный** hostname Pocket ID. Пример выше — общий (локальный) вид.
@@ -238,16 +250,23 @@ users:
 ### Обязательные поля
 
 - `server.public_url` — публичный адрес фасада (используется в metadata и `WWW-Authenticate`).
-- `litellm.base_url` — только scheme+host, без path.
+- `litellm.base_url` — **дефолтный** апстрим (scheme + host). Пер-таулсетный `base_url` переопределяет его.
 - `pocket_id.issuer` и `pocket_id.token_validation.accepted_client_ids`.
 - `toolsets` и `users` не должны быть пустыми.
-- Для каждого `users.<email>.toolsets.<name>` требуется `headers.x-litellm-api-key`.
+
+`litellm.base_url` — только scheme+host, без path. В пер-таулсетном `toolsets.<name>.base_url` допустим префикс пути, который накладывается на апстрим MCP endpoint. Обязательного заголовка больше нет: грант может быть без состояния (например, у toolset включён `forward_access_token`) или указывать на публичный endpoint.
 
 ### Расшифровка полей пользователя
 
 - Ключ карты — email (метка) пользователя.
 - `sub` — идентификатор пользователя в Pocket ID, по нему идёт lookup.
-- `toolsets.<name>.headers` — заголовки, которые подставляются в исходящий запрос к LiteLLM (обычно персональный `x-litellm-api-key`).
+- `toolsets.<name>.headers` — заголовки, которые подставляются в исходящий запрос к апстриму (обычно персональный `x-litellm-api-key` для LiteLLM, или любой заголовок для обычного endpoint).
+
+### Расшифровка апстрима toolset
+
+- `toolsets.<name>.base_url` — опционально. Когда задан, toolset проксируется на этот URL (допустим префикс пути) вместо `litellm.base_url`, а `/toolset/<name>/mcp` накладывается на него. Так подключается **не-LiteLLM** Streamable HTTP MCP сервер, например `https://kryton.example.com/api/mcp`.
+- `toolsets.<name>.timeout` — опциональный пер-таулсетный таймаут апстрима (по умолчанию `litellm.timeout`).
+- `toolsets.<name>.forward_access_token` — когда `true`, проверенный access token пользователя передаётся апстриму в `Authorization` вместо снятия и подстановки статических заголовков. Выбирайте **одну** стратегию авторизации на toolset.
 
 ### CORS
 
@@ -282,9 +301,9 @@ users:
 2. `JWTValidate` — крипто-валидация RS256-подписи по JWKS, iss, тип токена, срок действия (с leeway).
 3. `ClientIDAllowlist` — совпадение `aud` токена с `accepted_client_ids`.
 4. `UserinfoResolve` — небелый пользователь → `403`; иначе запрос `userinfo` в AS (с кэшем) и кросс-проверка `sub`/`email`.
-5. `UserWhitelist` — наличие гранта на конкретный toolset, подстановка заголовков.
+5. `UserWhitelist` — наличие гранта на конкретный toolset, подстановка заголовков (или проброс токена при `forward_access_token`).
 
-Исходящий запрос к LiteLLM очищается от `Authorization`, `Cookie`, `X-Forwarded-Access-Token` и клиентского `x-litellm-api-key`, затем инжектятся заголовки пользователя.
+Исходящий запрос к апстриму очищается от `Authorization`, `Cookie`, `X-Forwarded-Access-Token` и клиентского `x-litellm-api-key`, затем инжектятся заголовки пользователя. При `toolsets.<name>.forward_access_token: true` проверенный `Authorization` сохраняется и пробрасывается как есть.
 
 ## Метрики (Prometheus)
 

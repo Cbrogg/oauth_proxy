@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,12 +21,44 @@ import (
 	"litellm-oauth-facade/internal/metrics"
 )
 
-func NewHandler(cfg *config.Config, toolsetName string, log *slog.Logger) http.Handler {
-	target, _ := url.Parse(strings.TrimRight(cfg.LiteLLM.BaseURL, "/"))
+// defaultScopes advertises the OAuth scopes ChatGPT will request. They mirror
+// the scopes_supported documented in the protected resource metadata.
+var defaultScopes = []string{"openid", "profile", "email"}
+
+func NewHandler(upstream config.ToolsetRuntime, toolsetBasePath string, toolsetName string, log *slog.Logger) http.Handler {
+	target, _ := url.Parse(strings.TrimRight(upstream.BaseURL, "/"))
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		ResponseHeaderTimeout: cfg.LiteLLM.Timeout,
+		ResponseHeaderTimeout: upstream.Timeout,
+	}
+
+	// Inject per-tool _meta.securitySchemes (oauth2) into tools/list responses
+	// so ChatGPT treats the tools as OAuth-gated and runs the linking flow.
+	// Only buffer and rewrite tools/list frames; other methods keep streaming.
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request == nil {
+			return nil
+		}
+		method := resp.Request.Context().Value(ctxMethodKey{}).(string)
+		if method != "tools/list" {
+			return nil
+		}
+		body, err := readAllLimited(resp.Body, 8<<20)
+		if err != nil {
+			return err
+		}
+		_ = resp.Body.Close()
+		rewrite := streamedRewriteFn(resp.Header.Get("Content-Type"), defaultScopes)
+		rewritten, err := rewrite(body)
+		if err != nil {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			return nil
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+		resp.ContentLength = int64(len(rewritten))
+		return nil
 	}
 
 	originalDirector := proxy.Director
@@ -33,10 +67,10 @@ func NewHandler(cfg *config.Config, toolsetName string, log *slog.Logger) http.H
 		incomingQuery := req.Context().Value(ctxQueryKey{}).(string)
 
 		originalDirector(req)
-		req.URL.Path = incomingPath
+		req.URL.Path = upstreamPath(upstream, toolsetBasePath, target.Path, incomingPath)
 		req.URL.RawQuery = incomingQuery
 		req.Host = target.Host
-		modifyRequest(req)
+		modifyRequest(req, upstream)
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -66,6 +100,10 @@ func NewHandler(cfg *config.Config, toolsetName string, log *slog.Logger) http.H
 		start := time.Now()
 		ctx := context.WithValue(r.Context(), ctxPathKey{}, r.URL.Path)
 		ctx = context.WithValue(ctx, ctxQueryKey{}, r.URL.RawQuery)
+		ctx = context.WithValue(ctx, ctxMethodKey{}, mcpMethod(r))
+		if body := r.Body; body != nil {
+			defer body.Close()
+		}
 		sw := &statusCapture{ResponseWriter: w}
 		proxy.ServeHTTP(sw, r.WithContext(ctx))
 		metrics.Global().ObserveProxy(toolsetName, time.Since(start))
@@ -76,7 +114,7 @@ func NewHandler(cfg *config.Config, toolsetName string, log *slog.Logger) http.H
 				"method", r.Method,
 				"path", r.URL.Path,
 				"upstream_status", sw.status,
-				"upstream_url", strings.TrimRight(cfg.LiteLLM.BaseURL, "/") + r.URL.Path,
+				"upstream_url", strings.TrimRight(upstream.BaseURL, "/") + r.URL.Path,
 				"duration_ms", time.Since(start).Milliseconds(),
 			}
 			if id := chimw.GetReqID(r.Context()); id != "" {
@@ -141,8 +179,50 @@ func (w *statusCapture) ReadFrom(r io.Reader) (int64, error) {
 
 type ctxPathKey struct{}
 type ctxQueryKey struct{}
+type ctxMethodKey struct{}
 
-func modifyRequest(req *http.Request) {
+// mcpMethod peeks the JSON-RPC method from the request body without consuming
+// it, so the reverse proxy can still forward the full body upstream.
+func mcpMethod(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	body, err := readAllLimited(r.Body, 1<<20)
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var msg struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return ""
+	}
+	return msg.Method
+}
+
+// upstreamPath computes the path to send upstream.
+//
+// For LiteLLM toolsets (no per-toolset base_url) the facade path is preserved
+// as-is so LiteLLM can route by its own /toolset/<name>/mcp layout. For a
+// toolset with an explicit base_url the incoming /toolset/<name>/mcp prefix is
+// replaced by the upstream path prefix, mapping onto any Streamable HTTP MCP
+// endpoint, e.g. /api/mcp.
+func upstreamPath(upstream config.ToolsetRuntime, toolsetBasePath, upstreamPath, incomingPath string) string {
+	if !upstream.CustomPath {
+		return incomingPath
+	}
+	suffix := strings.TrimPrefix(incomingPath, toolsetBasePath)
+	return strings.TrimRight(upstreamPath, "/") + suffix
+}
+
+func modifyRequest(req *http.Request, upstream config.ToolsetRuntime) {
+	if upstream.ForwardAccessToken {
+		// Pass the caller's validated access token upstream untouched. Drop
+		// the duplicated forwarded header the proxy may have added.
+		req.Header.Del("X-Forwarded-Access-Token")
+		return
+	}
 	for _, h := range []string{"Authorization", "Cookie", "X-Forwarded-Access-Token"} {
 		req.Header.Del(h)
 	}

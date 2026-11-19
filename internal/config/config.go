@@ -79,7 +79,56 @@ type IdentityConfig struct {
 	MatchBy string `yaml:"match_by"`
 }
 
-type ToolsetConfig struct{}
+// ToolsetConfig describes how a toolset's MCP endpoint is exposed through the
+// facade. It is not tied to LiteLLM: each toolset may proxy to its own
+// Streamable HTTP MCP endpoint (any server), while OAuth stays with Pocket ID.
+type ToolsetConfig struct {
+	// BaseURL optionally overrides the upstream this toolset proxies to.
+	// Unlike litellm.base_url it may carry a path prefix that maps to the MCP
+	// endpoint, e.g. "https://kryton.example.com/api/mcp". When empty the
+	// toolset falls back to litellm.base_url and the facade path is preserved.
+	BaseURL string `yaml:"base_url"`
+	// Timeout optionally overrides the upstream timeout for this toolset.
+	Timeout time.Duration `yaml:"timeout"`
+	// ForwardAccessToken, when true, passes the caller's validated Pocket ID
+	// access token upstream in the Authorization header instead of stripping it
+	// and injecting per-user static headers.
+	ForwardAccessToken bool `yaml:"forward_access_token"`
+}
+
+// ToolsetRuntime holds the resolved upstream settings for a toolset after the
+// per-toolset overrides have been merged with the litellm defaults.
+type ToolsetRuntime struct {
+	BaseURL string
+	Timeout time.Duration
+	// ForwardAccessToken passes the caller's validated access token upstream.
+	ForwardAccessToken bool
+	// CustomPath marks a per-toolset base_url that carries a path prefix, which
+	// makes the facade map the incoming path onto the upstream MCP endpoint.
+	CustomPath bool
+}
+
+// ToolsetUpstream resolves the effective upstream for a toolset: a per-toolset
+// base_url/timeout override or, when absent, the litellm defaults.
+func (c *Config) ToolsetUpstream(name string) ToolsetRuntime {
+	ts, ok := c.Toolsets[name]
+	if !ok {
+		return ToolsetRuntime{}
+	}
+	rt := ToolsetRuntime{
+		BaseURL:            c.LiteLLM.BaseURL,
+		Timeout:            c.LiteLLM.Timeout,
+		ForwardAccessToken: ts.ForwardAccessToken,
+	}
+	if ts.BaseURL != "" {
+		rt.BaseURL = ts.BaseURL
+		rt.CustomPath = true
+	}
+	if ts.Timeout > 0 {
+		rt.Timeout = ts.Timeout
+	}
+	return rt
+}
 
 type UserConfig struct {
 	Sub      string                        `yaml:"sub"`
@@ -189,6 +238,16 @@ func (c *Config) validate() error {
 		return fmt.Errorf("toolsets must not be empty")
 	}
 
+	for name, ts := range c.Toolsets {
+		if ts.BaseURL == "" {
+			continue
+		}
+		u, err := url.Parse(ts.BaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("toolsets.%s.base_url must be a scheme+host URL (a path prefix is allowed)", name)
+		}
+	}
+
 	if len(c.Users) == 0 {
 		return fmt.Errorf("users must not be empty")
 	}
@@ -212,10 +271,10 @@ func (c *Config) validate() error {
 			if _, ok := c.Toolsets[toolsetName]; !ok {
 				return fmt.Errorf("users.%s.toolsets.%s references unknown toolset", email, toolsetName)
 			}
-			key := grant.Headers["x-litellm-api-key"]
-			if key == "" {
-				return fmt.Errorf("users.%s.toolsets.%s.headers.x-litellm-api-key is required", email, toolsetName)
-			}
+			// Static per-user headers are optional: an upstream may accept the
+			// caller's access token (toolset.forward_access_token), a shared
+			// key, or no auth at all.
+			_ = grant.Headers
 		}
 	}
 

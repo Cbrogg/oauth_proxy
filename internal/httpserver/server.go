@@ -97,7 +97,7 @@ func registerToolset(r chi.Router, cfg *config.Config, meta *metadata.Service, d
 	r.Get(base+"/.well-known/oauth-authorization-server", meta.HandleOIDCMirror)
 	r.Method(http.MethodOptions, base+"/.well-known/oauth-authorization-server", middleware.Options204())
 
-	proxyHandler := proxy.NewHandler(cfg, name, log)
+	proxyHandler := proxy.NewHandler(cfg.ToolsetUpstream(name), cfg.ToolsetBasePath(name), name, log)
 
 	withToolset := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

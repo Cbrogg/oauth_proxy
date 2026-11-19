@@ -37,10 +37,26 @@ identity:
 # Ключ — email (метка). Lookup по полю sub (= Pocket ID User ID).
 # sub берётся из env POCKET_ID_USER_SUB: найдите пользователя в Pocket ID и
 # вставьте его User ID в .env. Если оставить плейсхолдер/заглушку —
-# фасад вернёт этому user 403, запрос до LiteLLM не дойдёт.
+# фасад вернёт этому user 403, запрос до апстрима не дойдёт.
+#
+# Каждый toolset проксируется через свой Streamable HTTP MCP endpoint.
+# По умолчанию (base_url не задан) апстрим — это litellm.base_url, а входящий
+# путь /toolset/<name>/mcp сохраняется как есть. Задав base_url (можно с
+# префиксом пути), toolset можно направить на ЛЮБОЙ другой MCP endpoint —
+# путь /toolset/<name>/mcp заменяется на этот префикс. OAuth2 при этом
+# по-прежнему решается через Pocket ID.
 toolsets:
+  # LiteLLM-toolset: апстрим = litellm.base_url, путь сохраняется.
   memos: {}
   n8n: {}
+  # Общий Streamable HTTP MCP endpoint (подчеркнуто: не LiteLLM).
+  # Входящий /toolset/kryton/mcp -> https://kryton.example.com/api/mcp
+  # forward_access_token: true передаёт проверенный access token пользователя
+  # апстриму в Authorization вместо статических заголовков ниже.
+  kryton:
+    base_url: "https://kryton.example.com/api/mcp"
+    timeout: "60s"
+    forward_access_token: false
 
 users:
   user@example.com:
@@ -52,3 +68,8 @@ users:
       n8n:
         headers:
           x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_N8N}"
+      # Для toolset с forward_access_token статические headers не нужны
+      # (и наоборот): админ выбирает одну стратегию авторизации на toolset.
+      kryton:
+        headers:
+          x-api-key: "${KRYTON_API_KEY_USER1}"

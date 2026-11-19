@@ -2,16 +2,16 @@
 
 > [Русская версия](README_RUS.md)
 
-A narrow **OAuth facade in front of LiteLLM** for connecting ChatGPT Apps to MCP toolsets.
+A narrow **OAuth facade** in front of **LiteLLM** (default) and any other **Streamable HTTP MCP endpoint** for connecting ChatGPT Apps to MCP toolsets.
 
-ChatGPT requires an OAuth **Resource Server** (metadata + a Bearer token from the Authorization Server). LiteLLM accepts a Virtual Key in a header. The facade closes this gap:
+ChatGPT requires an OAuth **Resource Server** (metadata + a Bearer token from the Authorization Server). The upstream MCP server (LiteLLM or any MCP endpoint) accepts its own auth — a Virtual Key in a header for LiteLLM, or an API key / the caller's token for a generic endpoint. The facade closes this gap:
 
 1. Serves the OAuth metadata (discovery, protected-resource) for ChatGPT.
 2. Validates the JWT from the Authorization Server and resolves the user via `userinfo`.
-3. Lets **only** whitelisted users from the config (`users`) through; everyone else gets `403`, and the request never reaches LiteLLM.
-4. Injects a **per-user** Virtual Key and proxies to LiteLLM on the same path that arrived at the facade (no rewrite).
+3. Lets **only** whitelisted users from the config (`users`) through; everyone else gets `403`, and the request never reaches the upstream.
+4. Strips the caller's token, injects **per-user** headers (Virtual Key for LiteLLM, or an API key for a generic endpoint) and proxies to the upstream. Per-toolset `forward_access_token` instead passes the validated token through.
 
-This is **not** a general-purpose OAuth/MCP proxy: all MCP management (servers, tools, toolsets, keys) happens in LiteLLM. The facade is **not** an Authorization Server, an MCP server, a tool registry, and does not issue JWTs.
+This is **not** a general-purpose OAuth/MCP proxy: the facade is **not** an Authorization Server, an MCP server, a tool registry, and does not issue JWTs. It validates OAuth (Pocket ID) and proxies to the Streamable HTTP MCP endpoint each toolset points at — LiteLLM by default, or any other server.
 
 ```
 ChatGPT
@@ -19,11 +19,12 @@ ChatGPT
   → login/token on the Pocket ID domain
   → MCP requests to the facade with a Pocket ID access token
        ↓ crypto-validate JWT → aud (client_id) → lookup by sub
-       ↓ sub not in users → 403 (stop, LiteLLM untouched)
-       ↓ present → strip Authorization → inject the user's x-litellm-api-key
-  → LiteLLM (same URL path, e.g. /toolset/memos/mcp)
+       ↓ sub not in users → 403 (stop, upstream untouched)
+       ↓ present → strip Authorization → inject the user's headers
+       ↓ (or forward_access_token → pass the token through)
+  → upstream MCP endpoint (LiteLLM / or custom base_url, e.g. /api/mcp)
        ↓
-  → Memos / Firefly / … (configured in the LiteLLM UI, not in the facade)
+  → Memos / N8N / Kryton / … (configured on that MCP server)
 ```
 
 ## Roles
@@ -31,8 +32,8 @@ ChatGPT
 | Role | Who | Area of responsibility |
 | --- | --- | --- |
 | OAuth AS | Pocket ID | authorize, token, userinfo, JWKS |
-| OAuth RS + proxy | **litellm-oauth-facade** | metadata, JWT, ACL, headers → LiteLLM |
-| MCP gateway | **LiteLLM** | toolsets, MCP servers, tools, virtual keys |
+| OAuth RS + proxy | **litellm-oauth-facade** | metadata, JWT, ACL, headers → upstream |
+| MCP gateway | **LiteLLM** (default) or any Streamable HTTP MCP server | toolsets, MCP servers, tools, keys |
 | MCP client | ChatGPT | OAuth + Streamable HTTP |
 
 ## Deployment topology
@@ -218,8 +219,16 @@ identity:
 
 # Key = email (label). Lookup is done by the field sub (= Pocket ID user id).
 toolsets:
+  # LiteLLM toolset: appstream = litellm.base_url, facade path preserved.
   memos: {}
   n8n: {}
+  # Generic Streamable HTTP MCP endpoint (not LiteLLM). The facade path
+  # /toolset/kryton/mcp maps onto https://kryton.example.com/api/mcp.
+  # forward_access_token: pass the validated token upstream instead of headers.
+  kryton:
+    base_url: "https://kryton.example.com/api/mcp"
+    timeout: "60s"
+    forward_access_token: false
 
 users:
   user@example.com:
@@ -231,6 +240,9 @@ users:
       n8n:
         headers:
           x-litellm-api-key: "Bearer ${LITELLM_KEY_USER1_N8N}"
+      kryton:
+        headers:
+          x-api-key: "${KRYTON_API_KEY_USER1}"
 ```
 
 > In the compose deployment, `litellm.base_url` is the **internal** `http://litellm:4000`; `pocket_id.*` point to the **public** Pocket ID hostname. The example above shows the general (local) form.
@@ -238,16 +250,23 @@ users:
 ### Required fields
 
 - `server.public_url` — the public address of the facade (used in metadata and `WWW-Authenticate`).
-- `litellm.base_url` — scheme + host only, no path.
+- `litellm.base_url` — the **default** upstream (scheme + host). Per-toolset `base_url` overrides it.
 - `pocket_id.issuer` and `pocket_id.token_validation.accepted_client_ids`.
 - `toolsets` and `users` must not be empty.
-- Each `users.<email>.toolsets.<name>` needs a `headers.x-litellm-api-key`.
+
+`litellm.base_url` must be scheme + host only (no path). A per-toolset `toolsets.<name>.base_url` may carry a path prefix that maps to the upstream MCP endpoint. There is **no** mandatory header anymore: a grant may be stateless (e.g. its toolset uses `forward_access_token`) or point at a public endpoint.
 
 ### User field breakdown
 
 - The map key is the user's email (label).
 - `sub` — the user identifier in Pocket ID; the lookup is done by it.
-- `toolsets.<name>.headers` — the headers injected into the outgoing request to LiteLLM (usually a per-user `x-litellm-api-key`).
+- `toolsets.<name>.headers` — the headers injected into the outgoing request to the upstream (usually a per-user `x-litellm-api-key` for LiteLLM, or any header for a generic endpoint).
+
+### Toolset upstream field breakdown
+
+- `toolsets.<name>.base_url` — optional. When set, the toolset proxies to this URL (path prefix allowed) instead of `litellm.base_url`, and `/toolset/<name>/mcp` is mapped onto it. This is how you connect a **non-LiteLLM** Streamable HTTP MCP server, e.g. `https://kryton.example.com/api/mcp`.
+- `toolsets.<name>.timeout` — optional per-toolset upstream timeout (defaults to `litellm.timeout`).
+- `toolsets.<name>.forward_access_token` — when `true`, the caller's validated Pocket ID access token is passed upstream in `Authorization` instead of stripping it and injecting static headers. Choose **one** auth strategy per toolset.
 
 ### CORS
 
@@ -282,9 +301,9 @@ For a protected request the following chain of checks runs:
 2. `JWTValidate` — crypto-validates the RS256 signature against JWKS, iss, token type, and expiry (with leeway).
 3. `ClientIDAllowlist` — the token's `aud` matches `accepted_client_ids`.
 4. `UserinfoResolve` — a non-white user → `403`; otherwise a `userinfo` request to the AS (cached) and a cross-check of `sub`/`email`.
-5. `UserWhitelist` — a grant for the specific toolset exists, and headers are injected.
+5. `UserWhitelist` — a grant for the specific toolset exists; headers are injected (or the token is forwarded when `forward_access_token` is set).
 
-The outgoing request to LiteLLM is stripped of `Authorization`, `Cookie`, `X-Forwarded-Access-Token`, and the client's `x-litellm-api-key`, then the user headers are injected.
+The outgoing request to the upstream is stripped of `Authorization`, `Cookie`, `X-Forwarded-Access-Token`, and the client's `x-litellm-api-key`, then the user headers are injected. With `toolsets.<name>.forward_access_token: true` the validated `Authorization` is kept and forwarded instead.
 
 ## Metrics (Prometheus)
 

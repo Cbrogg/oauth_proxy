@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadAndValidate(t *testing.T) {
@@ -109,6 +110,71 @@ users:
 	}
 	if _, err := Load(path); err != nil {
 		t.Fatalf("expected duplicate key to be allowed: %v", err)
+	}
+}
+
+func TestToolsetUpstreamResolution(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+server:
+  public_url: "https://example.com"
+litellm:
+  base_url: "https://litellm.example.com"
+  timeout: "30s"
+pocket_id:
+  issuer: "https://id.example.com"
+  discovery_url: "https://id.example.com/.well-known/openid-configuration"
+  jwks_uri: "https://id.example.com/.well-known/jwks.json"
+  userinfo_endpoint: "https://id.example.com/userinfo"
+  token_validation:
+    accepted_client_ids: ["client-1"]
+toolsets:
+  memos: {}
+  kryton:
+    base_url: "https://kryton.example.com/api/mcp"
+    timeout: "60s"
+    forward_access_token: true
+users:
+  a@example.com:
+    sub: "sub-a"
+    toolsets:
+      memos:
+        headers:
+          x-litellm-api-key: "Bearer key-a"
+      kryton: {}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	litellmRt := cfg.ToolsetUpstream("memos")
+	if litellmRt.BaseURL != "https://litellm.example.com" {
+		t.Fatalf("litellm base url: %s", litellmRt.BaseURL)
+	}
+	if litellmRt.Timeout != 30*time.Second {
+		t.Fatalf("litellm timeout: %s", litellmRt.Timeout)
+	}
+	if litellmRt.CustomPath {
+		t.Fatal("expected preserved path for LiteLLM toolset")
+	}
+
+	krytonRt := cfg.ToolsetUpstream("kryton")
+	if krytonRt.BaseURL != "https://kryton.example.com/api/mcp" {
+		t.Fatalf("kryton base url: %s", krytonRt.BaseURL)
+	}
+	if krytonRt.Timeout != time.Minute {
+		t.Fatalf("kryton timeout: %s", krytonRt.Timeout)
+	}
+	if !krytonRt.CustomPath {
+		t.Fatal("expected custom path mapping for kryton")
+	}
+	if !krytonRt.ForwardAccessToken {
+		t.Fatal("expected forward_access_token")
 	}
 }
 
