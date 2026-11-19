@@ -13,9 +13,9 @@ func TestMCPAuthenticateBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/toolset/yuvomi_anton/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("WWW-Authenticate", `Bearer resource_metadata="https://mcp-auth.tale-tales.ru/.well-known/oauth-protected-resource/toolset/yuvomi_anton/mcp", scope="openid profile email"`)
 
-	out, ok := mcpAuthenticateBody(req)
+	challenge := `Bearer resource_metadata="https://mcp-auth.tale-tales.ru/.well-known/oauth-protected-resource/toolset/yuvomi_anton/mcp", scope="openid profile email"`
+	out, ok := mcpAuthenticateBody(req, challenge)
 	if !ok {
 		t.Fatal("expected MCP authenticate body for JSON-RPC POST")
 	}
@@ -52,7 +52,7 @@ func TestMCPAuthenticateBody(t *testing.T) {
 func TestMCPAuthenticateBodyNonMCP(t *testing.T) {
 	// GET requests are not MCP tool calls
 	req := httptest.NewRequest(http.MethodGet, "/toolset/x/mcp", nil)
-	if _, ok := mcpAuthenticateBody(req); ok {
+	if _, ok := mcpAuthenticateBody(req, "challenge"); ok {
 		t.Fatal("GET must not produce MCP authenticate body")
 	}
 
@@ -60,7 +60,7 @@ func TestMCPAuthenticateBodyNonMCP(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/toolset/x/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","method":"initialize"}`))
 	req2.Header.Set("Content-Type", "application/json")
-	if _, ok := mcpAuthenticateBody(req2); ok {
+	if _, ok := mcpAuthenticateBody(req2, "challenge"); ok {
 		t.Fatal("request without id must not produce MCP authenticate body")
 	}
 }

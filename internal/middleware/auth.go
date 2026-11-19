@@ -207,7 +207,7 @@ func UserWhitelist(deps *Deps, toolsetName string) func(http.Handler) http.Handl
 
 func write401(w http.ResponseWriter, r *http.Request, challenge string) {
 	w.Header().Set("WWW-Authenticate", challenge)
-	if body, ok := mcpAuthenticateBody(r); ok {
+	if body, ok := mcpAuthenticateBody(r, challenge); ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write(body)
@@ -234,7 +234,7 @@ func Options204() http.HandlerFunc {
 // _meta["mcp/www_authenticate"] trigger ChatGPT uses to surface the OAuth
 // linking UI. It only applies to JSON-RPC tool requests; otherwise it reports
 // not-an-MCP-request so the caller keeps the plain HTTP 401 fallback.
-func mcpAuthenticateBody(r *http.Request) ([]byte, bool) {
+func mcpAuthenticateBody(r *http.Request, challenge string) ([]byte, bool) {
 	if r.Method != http.MethodPost {
 		return nil, false
 	}
@@ -261,7 +261,6 @@ func mcpAuthenticateBody(r *http.Request) ([]byte, bool) {
 		return nil, false
 	}
 
-	challenge := r.Header.Get("WWW-Authenticate")
 	resp := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      req.ID,
