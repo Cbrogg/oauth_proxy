@@ -9,6 +9,7 @@
   "scopes_supported": [
     "openid",
     "profile",
-    "email"
+    "email",
+    "offline_access"
   ]
 }

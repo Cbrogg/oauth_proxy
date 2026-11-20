@@ -14,7 +14,7 @@ func TestMCPAuthenticateBody(t *testing.T) {
 		strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call"}`))
 	req.Header.Set("Content-Type", "application/json")
 
-	challenge := `Bearer resource_metadata="https://mcp-auth.tale-tales.ru/.well-known/oauth-protected-resource/toolset/yuvomi_anton/mcp", scope="openid profile email"`
+	challenge := `Bearer resource_metadata="https://mcp-auth.tale-tales.ru/.well-known/oauth-protected-resource/toolset/yuvomi_anton/mcp", scope="openid profile email offline_access"`
 	out, ok := mcpAuthenticateBody(req, challenge)
 	if !ok {
 		t.Fatal("expected MCP authenticate body for JSON-RPC POST")
@@ -71,7 +71,7 @@ func TestWrite401SetsMCPBodyForToolRequest(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	challenge := `Bearer resource_metadata="https://mcp-auth.tale-tales.ru/.well-known/oauth-protected-resource/toolset/yuvomi_anton/mcp", scope="openid profile email"`
+	challenge := `Bearer resource_metadata="https://mcp-auth.tale-tales.ru/.well-known/oauth-protected-resource/toolset/yuvomi_anton/mcp", scope="openid profile email offline_access"`
 	write401(rec, req, challenge)
 
 	if rec.Code != http.StatusUnauthorized {

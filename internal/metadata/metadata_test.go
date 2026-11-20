@@ -49,7 +49,7 @@ func TestProtectedResourceGolden(t *testing.T) {
 func TestChallengeGolden(t *testing.T) {
 	cfg := testConfig(t)
 	got := metadata.Challenge(cfg, "memos")
-	want := `Bearer resource_metadata="https://YOUR-PUBLIC-FACADE-DOMAIN/.well-known/oauth-protected-resource/toolset/memos/mcp", scope="openid profile email"`
+	want := `Bearer resource_metadata="https://YOUR-PUBLIC-FACADE-DOMAIN/.well-known/oauth-protected-resource/toolset/memos/mcp", scope="openid profile email offline_access"`
 	if got != want {
 		t.Fatalf("challenge:\n%s", got)
 	}

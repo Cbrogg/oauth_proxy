@@ -32,7 +32,7 @@ func (s *Service) ProtectedResource(toolsetName string) protectedResource {
 		Resource:               s.cfg.ResourceURI(toolsetName),
 		AuthorizationServers:   []string{s.cfg.PocketID.Issuer},
 		BearerMethodsSupported: []string{"header"},
-		ScopesSupported:        []string{"openid", "profile", "email"},
+		ScopesSupported:        []string{"openid", "profile", "email", "offline_access"},
 	}
 }
 
@@ -61,7 +61,7 @@ func Challenge(cfg *config.Config, toolsetName string) string {
 	publicURL := strings.TrimRight(cfg.Server.PublicURL, "/")
 	suffix := cfg.MetadataSuffix(toolsetName)
 	metaURL := fmt.Sprintf("%s/.well-known/oauth-protected-resource/%s", publicURL, suffix)
-	return fmt.Sprintf(`Bearer resource_metadata="%s", scope="openid profile email"`, metaURL)
+	return fmt.Sprintf(`Bearer resource_metadata="%s", scope="openid profile email offline_access"`, metaURL)
 }
 
 func AudienceMatch(claims *pocketid.AccessTokenClaims, allowed map[string]struct{}) bool {
